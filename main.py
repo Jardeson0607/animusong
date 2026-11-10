@@ -14,7 +14,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MERCADOPAGO_TOKEN = "APP_USR-6901357183597422-111017-43b9d18b869c100375a585562176371d-3834462098"
+# Credenciais reais ativadas
+MERCADOPAGO_TOKEN = "APP_USR-1258272463364619-111017-4cecbcb6acc14e2944d6e74b1b3e68c9-573965975"
 SUPABASE_URL = "https://nzarerckumoybrrcqngs.supabase.co"
 SUPABASE_SERVICE_ROLE_KEY = "sb_secret_gTop5LPPWMdEzUvtCQqVeQ_XVBXu4rG"
 
@@ -23,25 +24,25 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 @app.get("/")
 def home():
-    return {"status": "API ANIMUS rodando!"}
+    return {"status": "API ANIMUS em producao rodando!"}
 
 @app.post("/gerar-pix")
 async def gerar_pix(request: Request):
     data = await request.json()
     valor = float(data.get("valor", 0))
-    nome = data.get("nome", "Doador Anônimo")
+    nome = data.get("nome", "Doador Anonymo").strip() or "Doador Anonymo"
     mensagem = data.get("mensagem", "")
 
-    if valor <= 0:
-        raise HTTPException(status_code=400, detail="Valor inválido")
+    if valor < 1.0:
+        raise HTTPException(status_code=400, detail="O valor minimo para doacao via PIX e R$ 1,00")
 
     payment_data = {
         "transaction_amount": valor,
-        "description": f"Doação ANIMUS - {nome}",
+        "description": f"Doacao ANIMUS - {nome}",
         "payment_method_id": "pix",
         "payer": {
             "email": "doacao@animussenadorpompeu.org",
-            "first_name": nome
+            "first_name": nome[:30]
         },
         "metadata": {
             "doador_nome": nome,
@@ -52,15 +53,20 @@ async def gerar_pix(request: Request):
     result = sdk.payment().create(payment_data)
     response = result.get("response", {})
     
-    if "point_of_interaction" not in response:
-        raise HTTPException(status_code=400, detail="Erro ao gerar PIX no Mercado Pago")
+    point_of_interaction = response.get("point_of_interaction", {})
+    transaction_data = point_of_interaction.get("transaction_data", {})
 
-    pix_data = response["point_of_interaction"]["transaction_data"]
+    qr_code = transaction_data.get("qr_code", "")
+    qr_code_base64 = transaction_data.get("qr_code_base64", "")
+
+    if not qr_code:
+        mensagem_erro = response.get("message", "Erro ao gerar PIX no Mercado Pago")
+        raise HTTPException(status_code=400, detail=mensagem_erro)
 
     return {
-        "payment_id": response["id"],
-        "qr_code": pix_data["qr_code"],
-        "qr_code_base64": pix_data["qr_code_base64"]
+        "payment_id": response.get("id"),
+        "qr_code": qr_code,
+        "qr_code_base64": qr_code_base64
     }
 
 @app.post("/webhook-pix")
