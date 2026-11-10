@@ -200,7 +200,8 @@
       <div x-show="dadosPix" class="text-center space-y-4">
         <h3 class="font-bold text-base text-slate-900">Escaneie ou Copie o PIX</h3>
         
-        <img :src="dadosPix?.qr_code_base64 ? (dadosPix.qr_code_base64.startsWith('data:') ? dadosPix.qr_code_base64 : 'data:image/png;base64,' + dadosPix.qr_code_base64) : ''" class="w-48 h-48 mx-auto rounded-xl border border-slate-200 p-2 shadow-sm">
+        <!-- TRATAMENTO SEGURO DA IMAGEM BASE64 DO PIX -->
+        <img :src="obterUrlQrCode()" class="w-48 h-48 mx-auto rounded-xl border border-slate-200 p-2 shadow-sm">
         
         <div class="bg-slate-50 border border-slate-200 p-3 rounded-xl text-left">
           <span class="text-[10px] text-slate-400 block font-semibold mb-1">Chave Copia e Cola:</span>
@@ -236,10 +237,18 @@
 
   <script>
     const SUPABASE_URL = 'https://nzarerckumoybrrcqngs.supabase.co';
+    // COLE AQUI A CHAVE 'anon' LEGACY QUE COMESA POR 'eyJhbGciOi...'
     const SUPABASE_ANON_KEY = 'sb_publishable_Smzwz7Yid4B-MAyC4lT7Bw_-Ve2fZx4';
     const API_BACKEND_URL = 'https://animusong.onrender.com';
 
-    const supabaseClient = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+    let supabaseClient = null;
+    try {
+      if (window.supabase) {
+        supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      }
+    } catch(e) {
+      console.error("Erro na inicializacao do Supabase:", e);
+    }
 
     function animusApp() {
       return {
@@ -262,26 +271,35 @@
         doacoesPublicas: [],
 
         async initApp() {
-          if (supabaseClient) {
-            await this.carregarDoacoesSupabase();
-            this.escutarNovasDoacoesRealtime();
-          }
+          await this.carregarDoacoesSupabase();
+          this.escutarNovasDoacoesRealtime();
         },
 
         async carregarDoacoesSupabase() {
           this.carregando = true;
           try {
-            const { data, error } = await supabaseClient
-              .from('doacoes')
-              .select('*')
-              .order('created_at', { ascending: false });
+            if (supabaseClient) {
+              const { data, error } = await supabaseClient
+                .from('doacoes')
+                .select('*')
+                .order('created_at', { ascending: false });
 
-            if (data) {
-              this.doacoesPublicas = data;
-              this.recalcularMetas();
+              if (data) {
+                this.doacoesPublicas = data;
+                this.recalcularMetas();
+              }
+            } else {
+              // Fallback via REST API do Supabase se o SDK JS falhar devido a chave nova
+              const res = await fetch(`${SUPABASE_URL}/rest/v1/doacoes?select=*&order=created_at.desc`, {
+                headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` }
+              });
+              if (res.ok) {
+                this.doacoesPublicas = await res.json();
+                this.recalcularMetas();
+              }
             }
           } catch (err) {
-            console.error('Erro Supabase:', err.message);
+            console.error('Erro ao buscar doacoes:', err.message);
           } finally {
             this.carregando = false;
           }
@@ -289,17 +307,14 @@
 
         escutarNovasDoacoesRealtime() {
           if (!supabaseClient) return;
-
-          supabaseClient
-            .channel('public:doacoes')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'doacoes' }, payload => {
-              this.carregarDoacoesSupabase();
-              if (this.dadosPix) {
-                this.modalCriarPix = false;
-                this.dadosPix = null;
-              }
-            })
-            .subscribe();
+          try {
+            supabaseClient
+              .channel('public:doacoes')
+              .on('postgres_changes', { event: '*', schema: 'public', table: 'doacoes' }, () => {
+                this.carregarDoacoesSupabase();
+              })
+              .subscribe();
+          } catch(e) {}
         },
 
         async gerarPixAPI() {
@@ -313,7 +328,8 @@
             const result = await response.json();
             if (response.ok) {
               this.dadosPix = result;
-              await this.carregarDoacoesSupabase();
+              // Forca a atualização imediata da lista do Supabase
+              setTimeout(() => this.carregarDoacoesSupabase(), 1000);
             } else {
               alert(result.detail || 'Erro ao gerar PIX');
             }
@@ -322,6 +338,13 @@
           } finally {
             this.gerando = false;
           }
+        },
+
+        obterUrlQrCode() {
+          if (!this.dadosPix?.qr_code_base64) return '';
+          const b64 = this.dadosPix.qr_code_base64;
+          if (b64.startsWith('data:')) return b64;
+          return 'data:image/png;base64,' + b64;
         },
 
         copiarCodigoPix() {
