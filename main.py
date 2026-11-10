@@ -1,4 +1,5 @@
 import os
+import uuid
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import mercadopago
@@ -57,21 +58,27 @@ async def gerar_pix(request: Request):
 
     qr_code = transaction_data.get("qr_code", "")
     qr_code_base64 = transaction_data.get("qr_code_base64", "")
-    payment_id = response.get("id")
+    payment_id = str(response.get("id"))
 
     if not qr_code or not payment_id:
         raise HTTPException(status_code=400, detail="Erro ao gerar PIX no Mercado Pago")
 
-    # Salva diretamente no Supabase ao gerar o PIX
+    # Garante a inserção imediata gerando UUID próprio para evitar conflito na PK 'id'
     try:
-        supabase.table("doacoes").insert({
-            "payment_id": str(payment_id),
-            "doador_nome": nome,
-            "valor": valor,
-            "mensagem": mensagem
-        }).execute()
+        # Verifica se já existe esse payment_id para não duplicar
+        check = supabase.table("doacoes").select("id").eq("payment_id", payment_id).execute()
+        if not check.data:
+            novo_item = {
+                "id": str(uuid.uuid4()),
+                "payment_id": payment_id,
+                "doador_nome": nome,
+                "valor": valor,
+                "mensagem": mensagem
+            }
+            res_ins = supabase.table("doacoes").insert(novo_item).execute()
+            print("Insercao manual bem-sucedida:", res_ins)
     except Exception as e:
-        print("Aviso ao inserir doacao inicial:", e)
+        print("Erro ao inserir doacao inicial:", e)
 
     return {
         "payment_id": payment_id,
@@ -84,7 +91,38 @@ async def webhook_pix(request: Request):
     try:
         data = await request.json()
         print("WEBHOOK RECEBIDO:", data)
+        
+        payment_id = None
+        if isinstance(data, dict):
+            if "data" in data and isinstance(data["data"], dict) and "id" in data["data"]:
+                payment_id = str(data["data"]["id"])
+            elif "id" in data:
+                payment_id = str(data["id"])
+            elif "resource" in data:
+                res_str = str(data["resource"])
+                payment_id = res_str.split("/")[-1] if "/" in res_str else res_str
+
+        if payment_id:
+            res = sdk.payment().get(payment_id)
+            payment_info = res.get("response", {})
+
+            if payment_info.get("status") == "approved":
+                metadata = payment_info.get("metadata", {})
+                doador_nome = metadata.get("doador_nome", "Doador Anônimo")
+                mensagem = metadata.get("mensagem", "")
+                valor = float(payment_info.get("transaction_amount", 0))
+
+                check = supabase.table("doacoes").select("id").eq("payment_id", payment_id).execute()
+                if not check.data:
+                    supabase.table("doacoes").insert({
+                        "id": str(uuid.uuid4()),
+                        "payment_id": payment_id,
+                        "doador_nome": doador_nome,
+                        "valor": valor,
+                        "mensagem": mensagem
+                    }).execute()
+                
     except Exception as e:
-        print("Erro webhook:", e)
+        print("Erro no webhook:", e)
 
     return {"status": "ok"}
