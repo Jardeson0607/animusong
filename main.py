@@ -71,16 +71,18 @@ async def gerar_pix(request: Request):
 async def webhook_pix(request: Request):
     try:
         data = await request.json()
+        print("WEBHOOK RECEBIDO:", data)
         
-        # Pega o ID do pagamento de qualquer formato que o Mercado Pago enviar
+        # Identifica o ID do pagamento enviado em qualquer estrutura do Mercado Pago
         payment_id = None
-        if "data" in data and "id" in data["data"]:
-            payment_id = data["data"]["id"]
-        elif "id" in data:
-            payment_id = data["id"]
-        elif "resource" in data:
-            resource = str(data["resource"])
-            payment_id = resource.split("/")[-1] if "/" in resource else resource
+        if isinstance(data, dict):
+            if "data" in data and isinstance(data["data"], dict) and "id" in data["data"]:
+                payment_id = data["data"]["id"]
+            elif "id" in data:
+                payment_id = data["id"]
+            elif "resource" in data:
+                res_str = str(data["resource"])
+                payment_id = res_str.split("/")[-1] if "/" in res_str else res_str
 
         if payment_id:
             res = sdk.payment().get(payment_id)
@@ -90,17 +92,20 @@ async def webhook_pix(request: Request):
                 metadata = payment_info.get("metadata", {})
                 doador_nome = metadata.get("doador_nome", "Doador Anônimo")
                 mensagem = metadata.get("mensagem", "")
-                valor = payment_info.get("transaction_amount")
+                valor = float(payment_info.get("transaction_amount", 0))
 
-                # Salva no Supabase (se ja existir, atualiza)
-                supabase.table("doacoes").upsert({
-                    "payment_id": str(payment_id),
-                    "doador_nome": doador_nome,
-                    "valor": valor,
-                    "mensagem": mensagem
-                }, on_conflict="payment_id").execute()
+                # Verifica se a doação já existe antes de inserir para não duplicar
+                check = supabase.table("doacoes").select("id").eq("payment_id", str(payment_id)).execute()
+                if not check.data:
+                    supabase.table("doacoes").insert({
+                        "payment_id": str(payment_id),
+                        "doador_nome": doador_nome,
+                        "valor": valor,
+                        "mensagem": mensagem
+                    }).execute()
+                    print(f"Doacao de {doador_nome} salva no Supabase com sucesso!")
                 
     except Exception as e:
-        print("Erro no webhook:", e)
+        print("Erro crítico no webhook:", e)
 
     return {"status": "ok"}
