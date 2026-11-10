@@ -14,7 +14,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Credenciais reais ativadas
 MERCADOPAGO_TOKEN = "APP_USR-1258272463364619-111017-4cecbcb6acc14e2944d6e74b1b3e68c9-573965975"
 SUPABASE_URL = "https://nzarerckumoybrrcqngs.supabase.co"
 SUPABASE_SERVICE_ROLE_KEY = "sb_secret_gTop5LPPWMdEzUvtCQqVeQ_XVBXu4rG"
@@ -24,7 +23,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 @app.get("/")
 def home():
-    return {"status": "API ANIMUS em producao rodando!"}
+    return {"status": "API ANIMUS rodando!"}
 
 @app.post("/gerar-pix")
 async def gerar_pix(request: Request):
@@ -34,7 +33,7 @@ async def gerar_pix(request: Request):
     mensagem = data.get("mensagem", "")
 
     if valor < 1.0:
-        raise HTTPException(status_code=400, detail="O valor minimo para doacao via PIX e R$ 1,00")
+        raise HTTPException(status_code=400, detail="O valor minimo e R$ 1,00")
 
     payment_data = {
         "transaction_amount": valor,
@@ -60,8 +59,7 @@ async def gerar_pix(request: Request):
     qr_code_base64 = transaction_data.get("qr_code_base64", "")
 
     if not qr_code:
-        mensagem_erro = response.get("message", "Erro ao gerar PIX no Mercado Pago")
-        raise HTTPException(status_code=400, detail=mensagem_erro)
+        raise HTTPException(status_code=400, detail="Erro ao gerar PIX no Mercado Pago")
 
     return {
         "payment_id": response.get("id"),
@@ -71,13 +69,19 @@ async def gerar_pix(request: Request):
 
 @app.post("/webhook-pix")
 async def webhook_pix(request: Request):
-    data = await request.json()
-    
-    action = data.get("action")
-    type_event = data.get("type")
-    
-    if type_event == "payment" or action in ["payment.created", "payment.updated"]:
-        payment_id = data.get("data", {}).get("id")
+    try:
+        data = await request.json()
+        
+        # Pega o ID do pagamento de qualquer formato que o Mercado Pago enviar
+        payment_id = None
+        if "data" in data and "id" in data["data"]:
+            payment_id = data["data"]["id"]
+        elif "id" in data:
+            payment_id = data["id"]
+        elif "resource" in data:
+            resource = str(data["resource"])
+            payment_id = resource.split("/")[-1] if "/" in resource else resource
+
         if payment_id:
             res = sdk.payment().get(payment_id)
             payment_info = res.get("response", {})
@@ -88,14 +92,15 @@ async def webhook_pix(request: Request):
                 mensagem = metadata.get("mensagem", "")
                 valor = payment_info.get("transaction_amount")
 
-                try:
-                    supabase.table("doacoes").insert({
-                        "payment_id": str(payment_id),
-                        "doador_nome": doador_nome,
-                        "valor": valor,
-                        "mensagem": mensagem
-                    }).execute()
-                except Exception as e:
-                    print("Doação já existente ou erro ao inserir:", e)
+                # Salva no Supabase (se ja existir, atualiza)
+                supabase.table("doacoes").upsert({
+                    "payment_id": str(payment_id),
+                    "doador_nome": doador_nome,
+                    "valor": valor,
+                    "mensagem": mensagem
+                }, on_conflict="payment_id").execute()
+                
+    except Exception as e:
+        print("Erro no webhook:", e)
 
     return {"status": "ok"}
